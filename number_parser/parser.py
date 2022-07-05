@@ -84,12 +84,17 @@ def _build_number(token_list, lang_data):
     previous_power_of_10 = None
     value_list = []
     used_skip_tokens = []
+    tokens_taken = []
+    mappings_list = []
 
     for token in token_list:
         if not token.strip():
+            mappings_list.append((token, token))
             continue
+
         if token in lang_data.skip_tokens:
             used_skip_tokens.append(token)
+            tokens_taken.append(token)
             continue
 
         is_large_multiplier = _check_large_multiplier(token, total_value, current_grp_value, lang_data)
@@ -100,16 +105,29 @@ def _build_number(token_list, lang_data):
             current_grp_value = 0
             used_skip_tokens = []
             previous_power_of_10 = lang_data.big_powers_of_ten[token]
+            tokens_taken.append(token)
             continue
 
         valid = _check_validity(token, previous_token, previous_power_of_10, total_value, current_grp_value, lang_data)
         if not valid:
             total_value += current_grp_value
             value_list.append(str(total_value))
+
+            if tokens_taken[-1] in lang_data.skip_tokens:
+                mappings_list.append((tokens_taken[0:-1], str(total_value)))
+                mappings_list.append((' ', ' '))
+            else:
+                mappings_list.append((tokens_taken.copy(), str(total_value)))
+                mappings_list.append((' ', ' '))
+
+            tokens_taken.clear()
+
             total_value = 0
             current_grp_value = 0
             for skip_token in used_skip_tokens:
                 value_list.append(skip_token)
+                mappings_list.append((skip_token, skip_token))
+                mappings_list.append((' ', ' '))
             previous_power_of_10 = None
 
         if token in lang_data.unit_and_direct_numbers:
@@ -134,9 +152,13 @@ def _build_number(token_list, lang_data):
 
         previous_token = token
         used_skip_tokens = []
+
+        tokens_taken.append(token)
+
     total_value += current_grp_value
     value_list.append(str(total_value))
-    return value_list
+    mappings_list.append((tokens_taken, str(total_value)))
+    return value_list, mappings_list
 
 
 def _tokenize(input_string, language):
@@ -262,7 +284,7 @@ def parse_number(input_string, language=None):
         if _is_skip_token(token, lang_data) and index != 0:
             continue
         return None
-    number_built = _build_number(normalized_tokens, lang_data)
+    number_built, _ = _build_number(normalized_tokens, lang_data)
     if len(number_built) == 1:
         return int(number_built[0])
     return None
@@ -298,7 +320,7 @@ def parse_fraction(input_string, language=None):
     return None
 
 
-def parse(input_string, language=None):
+def parse(input_string, language=None, final_mappings=[]):
     """
     Converts all the numbers in a sentence written in natural language to their numeric type while keeping
     the other words unchanged. Returns the transformed string.
@@ -314,10 +336,14 @@ def parse(input_string, language=None):
     current_sentence = []
     tokens_taken = []
     pop_last_space = True
+    mappings = []
 
     def _build_and_add_number(pop_last_space=False):
         if tokens_taken:
-            result = _build_number(tokens_taken, lang_data)
+            result, number_mappings = _build_number(tokens_taken, lang_data)
+
+            mappings.extend(number_mappings)
+
             tokens_taken.clear()
 
             for number in result:
@@ -325,6 +351,8 @@ def parse(input_string, language=None):
 
             if pop_last_space:
                 current_sentence.pop()
+            else:
+                mappings.append((' ', ' '))
 
     for token in tokens:
         compare_token = _strip_accents(token.lower())
@@ -333,6 +361,7 @@ def parse(input_string, language=None):
         if not compare_token.strip():
             if not tokens_taken:
                 current_sentence.append(token)
+                mappings.append((token, token))
                 pop_last_space = True
             else:
                 pop_last_space = False
@@ -341,6 +370,7 @@ def parse(input_string, language=None):
         if compare_token in SENTENCE_SEPARATORS:
             _build_and_add_number(pop_last_space=pop_last_space)
             current_sentence.append(token)
+            mappings.append((token, token))
             final_sentence.extend(current_sentence)
             current_sentence = []
             continue
@@ -360,13 +390,46 @@ def parse(input_string, language=None):
                 tokens_taken.pop()
                 _build_and_add_number()
                 current_sentence.extend([skip_token, " "])
+                mappings.append((skip_token, skip_token))
+                mappings.append((' ', ' '))
 
             _build_and_add_number()
             current_sentence.append(token)
+            mappings.append((token, token))
 
         pop_last_space = True
 
     _build_and_add_number()
 
+    current_mapping = None
+
+    final_mappings.clear()
+
+    for (tokens_from, tokens_to) in mappings:
+
+        if current_mapping is None:
+            if type(tokens_from) == list:
+                current_mapping = (' '.join(tokens_from), tokens_to)
+            elif tokens_from != ' ':
+                current_mapping = (tokens_from, tokens_to)
+            continue
+
+        if tokens_from == ' ':
+            final_mappings.append(current_mapping)
+            current_mapping = None
+        elif type(tokens_from) == list:
+            final_mappings.append(current_mapping)
+            current_mapping = (' '.join(tokens_from), tokens_to)
+        else:
+            current_mapping = (
+                current_mapping[0] + tokens_from,
+                    current_mapping[1] + tokens_to)
+
+    if current_mapping is not None:
+        final_mappings.append(current_mapping)
+
     final_sentence.extend(current_sentence)
-    return ''.join(final_sentence).strip()
+
+    final_sentence = [w[1] for w in final_mappings]
+
+    return ' '.join(final_sentence).strip()
